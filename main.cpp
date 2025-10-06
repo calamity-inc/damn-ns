@@ -14,6 +14,10 @@
 #include <SocketAddr.hpp>
 #include <string.hpp>
 
+#ifdef DOCKER
+#include <signal.h>
+#endif
+
 using namespace soup;
 
 static Server serv;
@@ -177,5 +181,8 @@ int main()
 		return 1;
 	}
 	std::cout << "Listening on UDP/53" << std::endl;
+#ifdef DOCKER
+	signal(SIGTERM, [](int) { exit(0); });
+#endif
 	serv.run();
 }
