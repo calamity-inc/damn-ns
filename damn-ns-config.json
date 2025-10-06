@@ -1,0 +1,6 @@
+{
+	"upstream_doh": "1.1.1.1",
+	"hosts": {
+		"damn-ns.works.lan": "198.251.90.234", // If all is well, http://damn-ns.works.lan should work.
+	}
+}
