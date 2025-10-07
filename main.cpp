@@ -23,6 +23,7 @@ using namespace soup;
 static Server serv;
 static std::string upstream_server;
 static std::unordered_map<std::string, std::vector<SharedPtr<dnsRecord>>> hosts{};
+static const std::vector<SharedPtr<dnsRecord>> NORRS{};
 
 struct ForwardDnsTask : public Task
 {
@@ -67,7 +68,10 @@ int main()
 			return 1;
 		}
 
-		upstream_server = config->asObj().at("upstream_doh").asStr().value;
+		if (auto upstream_doh = config->asObj().find("upstream_doh"))
+		{
+			upstream_server = upstream_doh->asStr().value;
+		}
 
 		for (const auto& e : config->asObj().at("hosts").asObj())
 		{
@@ -118,62 +122,67 @@ int main()
 
 		std::cout << "Query for " << qname << " from " << addr.toString() << std::endl;
 
+		const std::vector<SharedPtr<dnsRecord>>* rrs = &NORRS;
 		if (auto e = hosts.find(qname); e != hosts.end())
 		{
-			const auto& rrs = e->second;
-
-			dh.setIsResponse(true);
-			dh.bitfield1 |= (1 << 2); // AA
-			dh.bitfield2 = 0; // RA = 0, Z = 0, RCODE = OK
-
-			// Count num. answers
-			dh.ancount = 0;
-			for (const auto& rr : rrs)
-			{
-				if (rr->type == dq.qtype
-					|| dq.qtype == DNS_ALL
-					)
-				{
-					++dh.ancount;
-				}
-			}
-
-			// Reset num. additionals in case query had some
-			dh.arcount = 0;
-
-			StringWriter sw;
-			dh.write(sw);
-			dq.write(sw);
-
-			for (const auto& rr : rrs)
-			{
-				if (rr->type != dq.qtype
-					&& dq.qtype != DNS_ALL
-					)
-				{
-					continue;
-				}
-				dnsResource dr{};
-				if (rr->name == qname)
-				{
-					dr.name.ptr = 12; // point to name in dnsQuestion
-				}
-				else
-				{
-					dr.name.name = string::explode(rr->name, '.'); // could be more efficient for subdomains
-				}
-				dr.rtype = rr->type;
-				dr.rclass = DNS_IN;
-				dr.ttl = rr->ttl;
-				dr.rdata = rr->toRdata();
-				dr.write(sw);
-			}
-			sock.udpServerSend(addr, sw.data);
+			rrs = &e->second;
 		}
 		else
 		{
-			serv.add<ForwardDnsTask>(serv.getShared(sock), addr, data);
+			if (!upstream_server.empty())
+			{
+				serv.add<ForwardDnsTask>(serv.getShared(sock), addr, data);
+				return;
+			}
 		}
+
+		dh.setIsResponse(true);
+		dh.bitfield1 |= (1 << 2); // AA
+		dh.bitfield2 = 0; // RA = 0, Z = 0, RCODE = OK
+
+		// Count num. answers
+		dh.ancount = 0;
+		for (const auto& rr : *rrs)
+		{
+			if (rr->type == dq.qtype
+				|| dq.qtype == DNS_ALL
+				)
+			{
+				++dh.ancount;
+			}
+		}
+
+		// Reset num. additionals in case query had some
+		dh.arcount = 0;
+
+		StringWriter sw;
+		dh.write(sw);
+		dq.write(sw);
+
+		for (const auto& rr : *rrs)
+		{
+			if (rr->type != dq.qtype
+				&& dq.qtype != DNS_ALL
+				)
+			{
+				continue;
+			}
+			dnsResource dr{};
+			if (rr->name == qname)
+			{
+				dr.name.ptr = 12; // point to name in dnsQuestion
+			}
+			else
+			{
+				dr.name.name = string::explode(rr->name, '.'); // could be more efficient for subdomains
+			}
+			dr.rtype = rr->type;
+			dr.rclass = DNS_IN;
+			dr.ttl = rr->ttl;
+			dr.rdata = rr->toRdata();
+			dr.write(sw);
+		}
+		sock.udpServerSend(addr, sw.data);
 	});
 	if (!bindres)
 	{
