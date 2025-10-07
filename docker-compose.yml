@@ -1,0 +1,7 @@
+services:
+  damn-ns:
+    build: .
+    volumes:
+      - ./damn-ns-config.json:/app/damn-ns-config.json:ro
+    ports:
+      - "53:53/udp"
