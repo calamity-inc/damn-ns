@@ -164,9 +164,10 @@ int main()
 {
 	IpAddr bind_addr;
 
+	try
 	{
 		auto config = json::decode(string::fromFile("damn-ns-config.json"));
-		if (!config || !config->isObj() || !config->asObj().contains("hosts"))
+		if (!config)
 		{
 			std::cout << "Invalid damn-ns-config.json" << std::endl;
 #if SOUP_WINDOWS
@@ -200,6 +201,14 @@ int main()
 			}
 			hosts.emplace(e.first->asStr().value, std::vector<SharedPtr<dnsRecord>>{ std::move(rr) });
 		}
+	}
+	catch (const std::exception& e)
+	{
+		std::cout << "Invalid damn-ns-config.json: " << e.what() << std::endl;
+#if SOUP_WINDOWS
+		system("pause");
+#endif
+		return 1;
 	}
 
 _retry_bind:
