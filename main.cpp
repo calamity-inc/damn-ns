@@ -8,6 +8,7 @@
 #include <HttpRequestTask.hpp>
 #include <json.hpp>
 #include <MemoryRefReader.hpp>
+#include <netAdaptor.hpp>
 #include <Server.hpp>
 #include <SharedPtr.hpp>
 #include <Socket.hpp>
@@ -192,9 +193,24 @@ int main()
 		}
 	}
 
+_retry_bind:
 	if (!(bind_addr.isZero() ? serv.bindUdp(53, handle_datagram) : serv.bindUdp(bind_addr, 53, handle_datagram)))
 	{
 		std::cout << "Failed to bind UDP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
+#if SOUP_WINDOWS
+		if (bind_addr.isZero())
+		{
+			for (const auto& ad : netAdaptor::getAll())
+			{
+				if (ad.name.find("Virtual") == std::string::npos)
+				{
+					bind_addr = ad.ip_addr;
+					goto _retry_bind;
+				}
+			}
+		}
+		system("pause");
+#endif
 		return 1;
 	}
 	std::cout << "Listening on UDP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
