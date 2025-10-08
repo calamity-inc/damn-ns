@@ -58,6 +58,107 @@ struct ForwardDnsTask : public Task
 	}
 };
 
+static void handle_datagram(Socket& sock, SocketAddr&& addr, std::string&& data)
+{
+	MemoryRefReader sr(data);
+
+	dnsHeader dh;
+	dh.read(sr);
+
+	if (dh.isResponse())
+	{
+		std::cout << "Ignoring non-query from " << addr.toString() << std::endl;
+		return;
+	}
+
+	if (dh.qdcount != 1)
+	{
+		std::cout << "Ignoring query with more than 1 question from " << addr.toString() << std::endl;
+		return;
+	}
+
+	dnsQuestion dq;
+	dq.read(sr);
+
+	if (dq.qclass != DNS_IN)
+	{
+		std::cout << "Ignoring non-internet query from " << addr.toString() << std::endl;
+		return;
+	}
+
+	// DNS is case-insensitive, so make query all lowercase for simplicity.
+	for (auto& entry : dq.name.name)
+	{
+		string::lower(entry);
+	}
+
+	auto qname = string::join(dq.name.name, '.');
+
+	std::cout << "Query for " << qname << " from " << addr.toString() << std::endl;
+
+	const std::vector<SharedPtr<dnsRecord>>* rrs = &NORRS;
+	if (auto e = hosts.find(qname); e != hosts.end())
+	{
+		rrs = &e->second;
+	}
+	else
+	{
+		if (!upstream_server.empty())
+		{
+			serv.add<ForwardDnsTask>(serv.getShared(sock), addr, data);
+			return;
+		}
+	}
+
+	dh.setIsResponse(true);
+	dh.bitfield1 |= (1 << 2); // AA
+	dh.bitfield2 = 0; // RA = 0, Z = 0, RCODE = OK
+
+	// Count num. answers
+	dh.ancount = 0;
+	for (const auto& rr : *rrs)
+	{
+		if (rr->type == dq.qtype
+			|| dq.qtype == DNS_ALL
+			)
+		{
+			++dh.ancount;
+		}
+	}
+
+	// Reset num. additionals in case query had some
+	dh.arcount = 0;
+
+	StringWriter sw;
+	dh.write(sw);
+	dq.write(sw);
+
+	for (const auto& rr : *rrs)
+	{
+		if (rr->type != dq.qtype
+			&& dq.qtype != DNS_ALL
+			)
+		{
+			continue;
+		}
+		dnsResource dr{};
+		if (rr->name == qname)
+		{
+			dr.name.ptr = 12; // point to name in dnsQuestion
+		}
+		else
+		{
+			dr.name.name = string::explode(rr->name, '.'); // could be more efficient for subdomains
+		}
+		dr.rtype = rr->type;
+		dr.rclass = DNS_IN;
+		dr.ttl = rr->ttl;
+		dr.rdata = rr->toRdata();
+		dr.write(sw);
+	}
+	sock.udpServerSend(addr, sw.data);
+}
+
 int main()
 {
 	{
@@ -84,107 +185,7 @@ int main()
 		}
 	}
 
-	const auto bindres = serv.bindUdp(53, [](Socket& sock, SocketAddr&& addr, std::string&& data)
-	{
-		MemoryRefReader sr(data);
-
-		dnsHeader dh;
-		dh.read(sr);
-
-		if (dh.isResponse())
-		{
-			std::cout << "Ignoring non-query from " << addr.toString() << std::endl;
-			return;
-		}
-
-		if (dh.qdcount != 1)
-		{
-			std::cout << "Ignoring query with more than 1 question from " << addr.toString() << std::endl;
-			return;
-		}
-
-		dnsQuestion dq;
-		dq.read(sr);
-
-		if (dq.qclass != DNS_IN)
-		{
-			std::cout << "Ignoring non-internet query from " << addr.toString() << std::endl;
-			return;
-		}
-
-		// DNS is case-insensitive, so make query all lowercase for simplicity.
-		for (auto& entry : dq.name.name)
-		{
-			string::lower(entry);
-		}
-
-		auto qname = string::join(dq.name.name, '.');
-
-		std::cout << "Query for " << qname << " from " << addr.toString() << std::endl;
-
-		const std::vector<SharedPtr<dnsRecord>>* rrs = &NORRS;
-		if (auto e = hosts.find(qname); e != hosts.end())
-		{
-			rrs = &e->second;
-		}
-		else
-		{
-			if (!upstream_server.empty())
-			{
-				serv.add<ForwardDnsTask>(serv.getShared(sock), addr, data);
-				return;
-			}
-		}
-
-		dh.setIsResponse(true);
-		dh.bitfield1 |= (1 << 2); // AA
-		dh.bitfield2 = 0; // RA = 0, Z = 0, RCODE = OK
-
-		// Count num. answers
-		dh.ancount = 0;
-		for (const auto& rr : *rrs)
-		{
-			if (rr->type == dq.qtype
-				|| dq.qtype == DNS_ALL
-				)
-			{
-				++dh.ancount;
-			}
-		}
-
-		// Reset num. additionals in case query had some
-		dh.arcount = 0;
-
-		StringWriter sw;
-		dh.write(sw);
-		dq.write(sw);
-
-		for (const auto& rr : *rrs)
-		{
-			if (rr->type != dq.qtype
-				&& dq.qtype != DNS_ALL
-				)
-			{
-				continue;
-			}
-			dnsResource dr{};
-			if (rr->name == qname)
-			{
-				dr.name.ptr = 12; // point to name in dnsQuestion
-			}
-			else
-			{
-				dr.name.name = string::explode(rr->name, '.'); // could be more efficient for subdomains
-			}
-			dr.rtype = rr->type;
-			dr.rclass = DNS_IN;
-			dr.ttl = rr->ttl;
-			dr.rdata = rr->toRdata();
-			dr.write(sw);
-		}
-		sock.udpServerSend(addr, sw.data);
-	});
-	if (!bindres)
+	if (!serv.bindUdp(53, handle_datagram))
 	{
 		std::cout << "Failed to bind UDP/53" << std::endl;
 		return 1;
