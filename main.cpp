@@ -161,12 +161,19 @@ static void handle_datagram(Socket& sock, SocketAddr&& addr, std::string&& data)
 
 int main()
 {
+	IpAddr bind_addr;
+
 	{
 		auto config = json::decode(string::fromFile("damn-ns-config.json"));
 		if (!config || !config->isObj())
 		{
 			std::cout << "Invalid damn-ns-config.json" << std::endl;
 			return 1;
+		}
+
+		if (auto j_bind_addr = config->asObj().find("bind_addr"))
+		{
+			bind_addr.fromString(j_bind_addr->asStr().value);
 		}
 
 		if (auto upstream_doh = config->asObj().find("upstream_doh"))
@@ -185,12 +192,12 @@ int main()
 		}
 	}
 
-	if (!serv.bindUdp(53, handle_datagram))
+	if (!(bind_addr.isZero() ? serv.bindUdp(53, handle_datagram) : serv.bindUdp(bind_addr, 53, handle_datagram)))
 	{
-		std::cout << "Failed to bind UDP/53" << std::endl;
+		std::cout << "Failed to bind UDP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
 		return 1;
 	}
-	std::cout << "Listening on UDP/53" << std::endl;
+	std::cout << "Listening on UDP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
 #ifdef DOCKER
 	signal(SIGTERM, [](int) { exit(0); });
 #endif
