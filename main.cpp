@@ -10,6 +10,7 @@
 #include <MemoryRefReader.hpp>
 #include <netAdaptor.hpp>
 #include <Server.hpp>
+#include <ServerService.hpp>
 #include <SharedPtr.hpp>
 #include <Socket.hpp>
 #include <SocketAddr.hpp>
@@ -25,6 +26,22 @@ static Server serv;
 static std::string upstream_server;
 static std::unordered_map<std::string, std::vector<SharedPtr<dnsRecord>>> hosts{};
 static const std::vector<SharedPtr<dnsRecord>> NORRS{};
+
+static void send_response(Socket& sock, const SocketAddr& addr, const std::string& data)
+{
+	if (addr.port)
+	{
+		sock.udpServerSend(addr, data);
+	}
+	else
+	{
+		StringWriter sw;
+		uint16_t len = data.size();
+		sw.u16_be(len);
+		sock.send(sw.data);
+		sock.send(data);
+	}
+}
 
 struct ForwardDnsTask : public Task
 {
@@ -52,7 +69,7 @@ struct ForwardDnsTask : public Task
 		{
 			if (http.result)
 			{
-				static_cast<Socket*>(sock.get())->udpServerSend(addr, std::move(http.result->body));
+				send_response(*static_cast<Socket*>(sock.get()), addr, std::move(http.result->body));
 			}
 			setWorkDone();
 		}
@@ -68,13 +85,13 @@ static void handle_datagram(Socket& sock, SocketAddr&& addr, std::string&& data)
 
 	if (dh.isResponse())
 	{
-		std::cout << "Ignoring non-query from " << addr.toString() << std::endl;
+		std::cout << "Ignoring non-query from " << (addr.port ? addr : sock.peer).toString() << std::endl;
 		return;
 	}
 
 	if (dh.qdcount != 1)
 	{
-		std::cout << "Ignoring query with more than 1 question from " << addr.toString() << std::endl;
+		std::cout << "Ignoring query with more than 1 question from " << (addr.port ? addr : sock.peer).toString() << std::endl;
 		return;
 	}
 
@@ -83,7 +100,7 @@ static void handle_datagram(Socket& sock, SocketAddr&& addr, std::string&& data)
 
 	if (dq.qclass != DNS_IN)
 	{
-		std::cout << "Ignoring non-internet query from " << addr.toString() << std::endl;
+		std::cout << "Ignoring non-internet query from " << (addr.port ? addr : sock.peer).toString() << std::endl;
 		return;
 	}
 
@@ -95,7 +112,7 @@ static void handle_datagram(Socket& sock, SocketAddr&& addr, std::string&& data)
 
 	auto qname = string::join(dq.name.name, '.');
 
-	std::cout << "Query for " << qname << " from " << addr.toString() << std::endl;
+	std::cout << "Query for " << qname << " from " << (addr.port ? addr : sock.peer).toString() << std::endl;
 
 	const std::vector<SharedPtr<dnsRecord>>* rrs = &NORRS;
 	if (auto e = hosts.find(qname); e != hosts.end())
@@ -157,7 +174,33 @@ static void handle_datagram(Socket& sock, SocketAddr&& addr, std::string&& data)
 		dr.rdata = rr->toRdata();
 		dr.write(sw);
 	}
-	sock.udpServerSend(addr, sw.data);
+	send_response(sock, addr, sw.data);
+}
+
+static void receive_frame(Socket& s, std::string&& data = {})
+{
+	s.recv([](Socket& s, std::string&& app, Capture&& cap)
+	{
+		std::string& data = cap.get<std::string>();
+		if (data.empty())
+		{
+			data = std::move(app);
+		}
+		else
+		{
+			data.append(app);
+		}
+
+		MemoryRefReader r(data);
+		uint16_t len; 
+		r.u16_be(len);
+		if (data.size() >= len)
+		{
+			handle_datagram(s, {}, data.substr(2, len));
+			data.erase(0, 2 + len);
+		}
+		receive_frame(s, std::move(data));
+	}, std::move(data));
 }
 
 int main()
@@ -223,6 +266,20 @@ _retry_bind:
 		return 1;
 	}
 	std::cout << "Listening on UDP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
+
+	ServerService tcp_srv([](Socket& s, ServerService&, Server&)
+	{
+		receive_frame(s);
+	});
+	if (bind_addr.isZero() ? serv.bind(53, &tcp_srv) : serv.bind(bind_addr, 53, &tcp_srv))
+	{
+		std::cout << "Listening on TCP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
+	}
+	else
+	{
+		std::cout << "Failed to bind TCP/" << bind_addr.toStringForAddr() << ":53" << std::endl;
+	}
+
 #ifdef DOCKER
 	signal(SIGTERM, [](int) { exit(0); });
 #endif
