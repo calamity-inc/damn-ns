@@ -217,6 +217,7 @@ _retry_bind:
 					goto _retry_bind;
 				}
 			}
+			std::cout << "Could not discover your LAN IP. Please manually fill in bind_addr in the config." << std::endl;
 		}
 		system("pause");
 #endif
