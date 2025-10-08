@@ -166,9 +166,12 @@ int main()
 
 	{
 		auto config = json::decode(string::fromFile("damn-ns-config.json"));
-		if (!config || !config->isObj())
+		if (!config || !config->isObj() || !config->asObj().contains("hosts"))
 		{
 			std::cout << "Invalid damn-ns-config.json" << std::endl;
+#if SOUP_WINDOWS
+			system("pause");
+#endif
 			return 1;
 		}
 
