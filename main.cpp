@@ -211,7 +211,7 @@ _retry_bind:
 		{
 			for (const auto& ad : netAdaptor::getAll())
 			{
-				if (ad.name.find("Virtual") == std::string::npos)
+				if (ad.ip_addr != 0 && ad.name.find("Virtual") == std::string::npos)
 				{
 					bind_addr = ad.ip_addr;
 					goto _retry_bind;
