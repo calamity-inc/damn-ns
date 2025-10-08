@@ -187,12 +187,18 @@ int main()
 
 		for (const auto& e : config->asObj().at("hosts").asObj())
 		{
+			SharedPtr<dnsRecord> rr;
 			IpAddr addr;
 			addr.fromString(e.second->asStr().value);
-			hosts.emplace(
-				e.first->asStr().value,
-				std::vector<SharedPtr<dnsRecord>>{ soup::make_shared<dnsARecord>(e.first->asStr().value, 69420, addr.getV4()) }
-			);
+			if (addr.isV4())
+			{
+				rr = soup::make_shared<dnsARecord>(e.first->asStr().value, 69420, addr.getV4());
+			}
+			else
+			{
+				rr = soup::make_shared<dnsAaaaRecord>(e.first->asStr().value, 69420, addr);
+			}
+			hosts.emplace(e.first->asStr().value, std::vector<SharedPtr<dnsRecord>>{ std::move(rr) });
 		}
 	}
 
